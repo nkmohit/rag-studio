@@ -1,0 +1,19 @@
+fastapi
+uvicorn
+
+# File upload & parsing
+python-multipart
+pypdf
+
+# Embeddings + ML
+sentence-transformers
+torch
+
+# Vector database
+chromadb
+
+# LLM
+google-genai
+
+# Config / env
+python-dotenv

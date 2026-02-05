@@ -1,0 +1,12 @@
+.venv/
+*.pyc
+__pycache__/
+.python-version
+uploads/
+test.txt
+.env
+misc/
+models/
+chroma/
+**/.DS_Store
+.DS_Store
