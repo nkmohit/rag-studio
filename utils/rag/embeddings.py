@@ -7,11 +7,11 @@ import uuid
 # Embedding model initialization
 # The model is loaded from a local path to avoid network dependency and reduce startup variability.
 
-model = SentenceTransformer(model_name_or_path="./models/retriever")
+model = SentenceTransformer(model_name_or_path="./utils/models/retriever")
 
 # Initialize Chroma client (local persistent DB)
 chroma_client = chromadb.PersistentClient(
-    path="./chroma"
+    path="./utils/chroma"
 )
 
 # Single collection for now
@@ -79,3 +79,49 @@ def query_text(
     )
 
     return results
+
+
+def get_all_documents():
+    """
+    Get all unique document sources from the collection.
+    """
+    try:
+        # Get all items from collection
+        all_data = collection.get()
+        
+        # Extract unique sources
+        sources = set()
+        if all_data and all_data.get("metadatas"):
+            for metadata in all_data["metadatas"]:
+                if metadata and "source" in metadata:
+                    sources.add(metadata["source"])
+        
+        return list(sources)
+    except Exception as e:
+        print(f"Error getting documents: {e}")
+        return []
+
+
+def delete_document_by_source(source: str):
+    """
+    Delete all chunks belonging to a specific document source.
+    """
+    try:
+        # Get all items
+        all_data = collection.get()
+        
+        # Find IDs that match the source
+        ids_to_delete = []
+        if all_data and all_data.get("ids") and all_data.get("metadatas"):
+            for idx, metadata in enumerate(all_data["metadatas"]):
+                if metadata and metadata.get("source") == source:
+                    ids_to_delete.append(all_data["ids"][idx])
+        
+        # Delete matching IDs
+        if ids_to_delete:
+            collection.delete(ids=ids_to_delete)
+            return {"status": "success", "deleted_count": len(ids_to_delete)}
+        else:
+            return {"status": "not_found", "deleted_count": 0}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
