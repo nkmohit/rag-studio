@@ -40,6 +40,10 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "documents" not in st.session_state:
     st.session_state.documents = []
+if "upload_expanded" not in st.session_state:
+    st.session_state.upload_expanded = True
+if "just_uploaded" not in st.session_state:
+    st.session_state.just_uploaded = False
 
 # Helper function to fetch documents
 def fetch_documents():
@@ -72,13 +76,14 @@ left_col, right_col = st.columns([1, 2], gap="large")
 with left_col:
     st.subheader("📂 Document Library")
     
-    # Upload section
-    with st.expander("➕ Upload New Document", expanded=True):
+    # Upload section - collapse after successful upload
+    with st.expander("➕ Upload New Document", expanded=st.session_state.upload_expanded):
         uploaded_file = st.file_uploader(
             "Choose a PDF or TXT file",
             type=["pdf", "txt"],
             help="Upload a document to add to your knowledge base",
-            label_visibility="collapsed"
+            label_visibility="collapsed",
+            key="file_uploader"
         )
         
         if uploaded_file is not None:
@@ -97,6 +102,9 @@ with left_col:
                             if index_data.get("status") == "indexed":
                                 st.success(f"✓ {uploaded_file.name} indexed!")
                                 st.session_state.documents = fetch_documents()
+                                # Collapse the upload section after successful upload
+                                st.session_state.upload_expanded = False
+                                st.session_state.just_uploaded = True
                                 st.rerun()
                             else:
                                 st.error(f"Indexing failed: {index_data.get('message', 'Unknown error')}")
@@ -106,7 +114,19 @@ with left_col:
             
             with col2:
                 if st.button("✖ Cancel", use_container_width=True):
+                    st.session_state.upload_expanded = False
                     st.rerun()
+    
+    # Show success message if just uploaded
+    if st.session_state.just_uploaded:
+        st.success("✅ Document indexed successfully! You can now ask questions.")
+        st.session_state.just_uploaded = False
+    
+    # Button to expand upload section again
+    if not st.session_state.upload_expanded:
+        if st.button("📤 Upload Another Document", use_container_width=True):
+            st.session_state.upload_expanded = True
+            st.rerun()
     
     st.divider()
     
@@ -136,22 +156,36 @@ with left_col:
 with right_col:
     st.subheader("💬 Chat Interface")
     
+    
     # Display chat messages
-    chat_container = st.container(height=500)
+    chat_container = st.container(height=430)
     
     with chat_container:
         if len(st.session_state.messages) == 0:
-            st.info("👋 Ask me anything! I can answer questions with or without documents.")
+            st.info("👋 Ask questions about your uploaded documents!")
         
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.write(message["content"])
                 
-                # Show sources if available (for assistant messages)
-                if message["role"] == "assistant" and message.get("sources"):
-                    st.caption("📚 Sources used:")
-                    sources_text = " • ".join([f"**{s}**" for s in message["sources"]])
-                    st.markdown(sources_text)
+                # Show grounding status for assistant messages
+                if message["role"] == "assistant":
+                    has_context = message.get("has_relevant_context", False)
+                    
+                    if has_context and message.get("sources"):
+                        # Show sources when answer is grounded
+                        st.caption("✅ Grounded in documents:")
+                        sources_text = " • ".join([f"**{s}**" for s in message["sources"]])
+                        st.markdown(sources_text)
+                    elif not has_context:
+                        # Show warning when no relevant context found
+                        st.caption("⚠️ No relevant context found in documents")
+                    
+                    # Show query rewrites used
+                    if message.get("queries_used") and len(message["queries_used"]) > 1:
+                        with st.expander("🔄 Query Variations Used"):
+                            for i, q in enumerate(message["queries_used"], 1):
+                                st.markdown(f"{i}. {q}")
                 
                 # Show retrieved chunks in an expander (for assistant messages)
                 if message["role"] == "assistant" and message.get("chunks"):
@@ -178,7 +212,7 @@ with right_col:
         })
         
         # Query the backend
-        with st.spinner("Thinking..."):
+        with st.spinner("🔄 Rewriting query and searching documents..."):
             try:
                 query_payload = {
                     "query": query,
@@ -192,12 +226,14 @@ with right_col:
                 query_response.raise_for_status()
                 result = query_response.json()
                 
-                # Add assistant message
+                # Add assistant message with grounding status
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": result.get("answer", "Sorry, I couldn't generate an answer."),
                     "sources": result.get("sources_used", []),
-                    "chunks": result.get("retrieved_chunks", [])
+                    "chunks": result.get("retrieved_chunks", []),
+                    "has_relevant_context": result.get("has_relevant_context", False),
+                    "queries_used": result.get("queries_used", [query])
                 })
                 
                 st.rerun()
@@ -208,7 +244,9 @@ with right_col:
                     "role": "assistant",
                     "content": f"Sorry, I encountered an error: {str(e)}",
                     "sources": [],
-                    "chunks": []
+                    "chunks": [],
+                    "has_relevant_context": False,
+                    "queries_used": [query]
                 })
                 st.rerun()
 

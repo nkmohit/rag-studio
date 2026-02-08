@@ -4,20 +4,11 @@ from typing import List
 import uuid
 
 
-# Embedding model initialization
-# The model is loaded from a local path to avoid network dependency and reduce startup variability.
-
 model = SentenceTransformer(model_name_or_path="./utils/models/retriever")
 
-# Initialize Chroma client (local persistent DB)
-chroma_client = chromadb.PersistentClient(
-    path="./utils/chroma"
-)
+chroma_client = chromadb.PersistentClient(path="./utils/chroma")
 
-# Single collection for now
-collection = chroma_client.get_or_create_collection(
-    name="documents"
-)
+collection = chroma_client.get_or_create_collection(name="documents")
 
 
 def chunk_text(
@@ -45,11 +36,8 @@ def index_text(text: str, source: str):
     Chunk text, embed chunks, and store in Chroma.
     """
     chunks = chunk_text(text)
-
     embeddings = model.encode(chunks).tolist()
-
     ids = [str(uuid.uuid4()) for _ in chunks]
-
     metadatas = [{"source": source} for _ in chunks]
 
     collection.add(
@@ -59,17 +47,15 @@ def index_text(text: str, source: str):
         ids=ids
     )
 
+
 def query_text(
     query: str,
-    top_k: int = 5
+    top_k: int = 5,
+    similarity_threshold: float = 0.5
 ):
     """
     Perform semantic similarity search against the vector store.
-
-    Steps:
-    - embed the query text
-    - run vector similarity search in Chroma
-    - return top matching document chunks
+    Returns results filtered by similarity threshold.
     """
     query_embedding = model.encode([query]).tolist()
 
@@ -78,7 +64,93 @@ def query_text(
         n_results=top_k
     )
 
-    return results
+    filtered_documents = []
+    filtered_metadatas = []
+    filtered_distances = []
+    
+    documents = results.get("documents", [[]])[0]
+    metadatas = results.get("metadatas", [[]])[0]
+    distances = results.get("distances", [[]])[0]
+    
+    for doc, meta, dist in zip(documents, metadatas, distances):
+        similarity = 1 / (1 + dist)
+        if similarity >= similarity_threshold:
+            filtered_documents.append(doc)
+            filtered_metadatas.append(meta)
+            filtered_distances.append(dist)
+    
+    return {
+        "documents": [filtered_documents] if filtered_documents else [[]],
+        "metadatas": [filtered_metadatas] if filtered_metadatas else [[]],
+        "distances": [filtered_distances] if filtered_distances else [[]],
+        "has_relevant_context": len(filtered_documents) > 0
+    }
+
+
+def query_text_multi_query(
+    queries: List[str],
+    top_k: int = 5,
+    similarity_threshold: float = 0.5,
+    apply_threshold: bool = True
+):
+    """
+    Perform multi-query semantic search using query rewriting.
+    
+    Improves retrieval by searching with multiple query perspectives,
+    aggregating results, deduplicating, and ranking by best score.
+    
+    Args:
+        queries: List of query variations (original + rewrites)
+        top_k: Number of results to return
+        similarity_threshold: Minimum similarity score (only applied if apply_threshold=True)
+        apply_threshold: Whether to filter by similarity threshold
+    """
+    doc_scores = {}
+    
+    for query in queries:
+        query_embedding = model.encode([query]).tolist()
+        
+        results = collection.query(
+            query_embeddings=query_embedding,
+            n_results=top_k
+        )
+        
+        documents = results.get("documents", [[]])[0]
+        metadatas = results.get("metadatas", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+        
+        for doc, meta, dist in zip(documents, metadatas, distances):
+            similarity = 1 / (1 + dist)
+            
+            should_include = not apply_threshold or similarity >= similarity_threshold
+            
+            if should_include:
+                if doc not in doc_scores:
+                    doc_scores[doc] = {
+                        "metadata": meta,
+                        "min_distance": dist,
+                        "count": 1
+                    }
+                else:
+                    doc_scores[doc]["min_distance"] = min(doc_scores[doc]["min_distance"], dist)
+                    doc_scores[doc]["count"] += 1
+    
+    sorted_docs = sorted(
+        doc_scores.items(),
+        key=lambda x: (x[1]["min_distance"] - (x[1]["count"] * 0.1))
+    )
+    
+    final_documents = [doc for doc, _ in sorted_docs[:top_k]]
+    final_metadatas = [data["metadata"] for _, data in sorted_docs[:top_k]]
+    final_distances = [data["min_distance"] for _, data in sorted_docs[:top_k]]
+    
+    return {
+        "documents": [final_documents] if final_documents else [[]],
+        "metadatas": [final_metadatas] if final_metadatas else [[]],
+        "distances": [final_distances] if final_distances else [[]],
+        "has_relevant_context": len(final_documents) > 0,
+        "queries_used": queries
+    }
 
 
 def get_all_documents():
@@ -86,10 +158,8 @@ def get_all_documents():
     Get all unique document sources from the collection.
     """
     try:
-        # Get all items from collection
         all_data = collection.get()
         
-        # Extract unique sources
         sources = set()
         if all_data and all_data.get("metadatas"):
             for metadata in all_data["metadatas"]:
@@ -107,17 +177,14 @@ def delete_document_by_source(source: str):
     Delete all chunks belonging to a specific document source.
     """
     try:
-        # Get all items
         all_data = collection.get()
         
-        # Find IDs that match the source
         ids_to_delete = []
         if all_data and all_data.get("ids") and all_data.get("metadatas"):
             for idx, metadata in enumerate(all_data["metadatas"]):
                 if metadata and metadata.get("source") == source:
                     ids_to_delete.append(all_data["ids"][idx])
         
-        # Delete matching IDs
         if ids_to_delete:
             collection.delete(ids=ids_to_delete)
             return {"status": "success", "deleted_count": len(ids_to_delete)}
