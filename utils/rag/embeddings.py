@@ -1,7 +1,10 @@
 from sentence_transformers import SentenceTransformer
 import chromadb
 from typing import List
-import uuid
+import hashlib
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 model = SentenceTransformer(model_name_or_path="./utils/models/retriever")
@@ -31,18 +34,33 @@ def chunk_text(
     return chunks
 
 
+def chunk_id(source: str, index: int) -> str:
+    """
+    Stable id for one chunk. Re-indexing the same source reuses these ids.
+    """
+    digest = hashlib.sha256()
+    digest.update(source.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(str(index).encode("ascii"))
+    return digest.hexdigest()
+
+
 def index_text(text: str, source: str):
     """
     Chunk text, embed chunks, and store in Chroma.
+    Existing chunks for this source are removed first so a re-index cannot duplicate them.
     """
     chunks = chunk_text(text)
-    embeddings = model.encode(chunks).tolist()
-    ids = [str(uuid.uuid4()) for _ in chunks]
+    if not chunks:
+        return
+    vectors = model.encode(chunks).tolist()
+    ids = [chunk_id(source, index) for index in range(len(chunks))]
     metadatas = [{"source": source} for _ in chunks]
 
+    collection.delete(where={"source": source})
     collection.add(
         documents=chunks,
-        embeddings=embeddings,
+        embeddings=vectors,
         metadatas=metadatas,
         ids=ids
     )
@@ -167,8 +185,8 @@ def get_all_documents():
                     sources.add(metadata["source"])
         
         return list(sources)
-    except Exception as e:
-        print(f"Error getting documents: {e}")
+    except Exception:
+        logger.exception("Error getting documents")
         return []
 
 
@@ -177,18 +195,13 @@ def delete_document_by_source(source: str):
     Delete all chunks belonging to a specific document source.
     """
     try:
-        all_data = collection.get()
-        
-        ids_to_delete = []
-        if all_data and all_data.get("ids") and all_data.get("metadatas"):
-            for idx, metadata in enumerate(all_data["metadatas"]):
-                if metadata and metadata.get("source") == source:
-                    ids_to_delete.append(all_data["ids"][idx])
-        
-        if ids_to_delete:
-            collection.delete(ids=ids_to_delete)
-            return {"status": "success", "deleted_count": len(ids_to_delete)}
-        else:
+        result = collection.delete(where={"source": source})
+        deleted = result.get("deleted") if isinstance(result, dict) else None
+        if deleted == 0:
             return {"status": "not_found", "deleted_count": 0}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        if isinstance(deleted, int):
+            return {"status": "success", "deleted_count": deleted}
+        return {"status": "success"}
+    except Exception as exc:
+        logger.exception("Failed to delete document %s", source)
+        return {"status": "error", "message": str(exc)}
