@@ -21,3 +21,7 @@ google-genai
 
 # Config / env
 python-dotenv
+
+# tests
+pytest
+httpx

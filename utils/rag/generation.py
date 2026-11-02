@@ -1,6 +1,9 @@
 from google import genai
+import logging
 import os
 from typing import List
+
+logger = logging.getLogger(__name__)
 
 api_key = os.environ.get("GEMINI_API_KEY")
 if not api_key:
@@ -42,8 +45,8 @@ Provide ONLY the alternative questions, one per line, without numbering or expla
         all_queries = [query] + rewrites[:3]
         
         return all_queries
-    except Exception as e:
-        print(f"Query rewriting failed: {e}")
+    except Exception:
+        logger.exception("Query rewriting failed")
         return [query]
 
 
